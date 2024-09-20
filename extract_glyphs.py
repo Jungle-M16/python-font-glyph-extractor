@@ -31,13 +31,17 @@ Author:
 Date:
     May 16th 2024 
 """
-
 import sys
 import os
 from fontTools.ttLib import TTFont
 from fontTools.pens.svgPathPen import SVGPathPen
 from fontTools.pens.boundsPen import BoundsPen
+from fontTools.pens.transformPen import TransformPen
+import re
 
+def sanitize_filename(name):
+    # Remove invalid filename characters
+    return re.sub(r'[<>:"/\\|?*]', '_', name)
 
 def extract_glyphs_to_svg(woff_path, output_dir):
     try:
@@ -53,8 +57,13 @@ def extract_glyphs_to_svg(woff_path, output_dir):
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
         
-        # Get glyph set
+        # Get glyph set and Unicode cmap
         glyph_set = font.getGlyphSet()
+        cmap = font['cmap'].getBestCmap()
+        unicode_to_glyph = {v: k for k, v in cmap.items()}
+        
+        # Keep track of used filenames to avoid duplicates
+        used_filenames = set()
         
         # Extract each glyph and save as SVG
         for glyph_name in glyph_set.keys():
@@ -70,14 +79,46 @@ def extract_glyphs_to_svg(woff_path, output_dir):
                 width = max_x - min_x
                 height = max_y - min_y
                 
-                # Generate SVG path data
+                # Generate SVG path data with Y-axis flipped
                 pen = SVGPathPen(glyph_set)
-                glyph.draw(pen)
+                transform = (1, 0, 0, -1, 0, 0)  # Flip Y-axis
+                tpen = TransformPen(pen, transform)
+                glyph.draw(tpen)
                 svg_path = pen.getCommands()
                 
+                # Adjust viewBox for flipped Y-axis
+                new_min_y = -max_y
+                
+                # Construct a unique filename
+                # Attempt to use Unicode code point if available
+                unicode_values = [code for code, name in unicode_to_glyph.items() if name == glyph_name]
+                if unicode_values:
+                    # Use the first Unicode value if multiple are present
+                    unicode_value = unicode_values[0]
+                    # Format Unicode value as 'U+XXXX'
+                    unicode_str = f"U+{unicode_value:04X}"
+                    filename_base = f"{unicode_str}_{glyph_name}"
+                else:
+                    # If no Unicode mapping, use glyph name and index
+                    filename_base = f"{glyph_name}"
+                
+                # Sanitize filename
+                filename_base = sanitize_filename(filename_base)
+                
+                # Ensure filename is unique
+                filename = filename_base
+                counter = 1
+                while filename.lower() in used_filenames:
+                    filename = f"{filename_base}_{counter}"
+                    counter += 1
+                used_filenames.add(filename.lower())
+                
+                svg_filename = os.path.join(output_dir, f"{filename}.svg")
+                
                 # Create SVG content
-                svg_content = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{min_x} {min_y} {width} {height}" width="{width}" height="{height}">\n<path d="{svg_path}"/>\n</svg>'
-                svg_filename = os.path.join(output_dir, f"{glyph_name}.svg")
+                svg_content = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="{min_x} {new_min_y} {width} {height}" width="{width}" height="{height}">
+<path d="{svg_path}"/>
+</svg>'''
                 
                 # Save SVG file
                 with open(svg_filename, 'w') as svg_file:
